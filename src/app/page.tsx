@@ -7,8 +7,12 @@ export default function Home() {
   const [session, setSession] = useState<any>(null); // Track user session
   const [habits, setHabits] = useState<any[]>([]);
   const [newHabitName, setNewHabitName] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterMode, setFilterMode] = useState<"all" | "completed" | "pending">("all");
+  const [sortMode, setSortMode] = useState<"recent" | "streak" | "name">("recent");
 
   // --- 1. CHECK AUTH STATUS ---
   useEffect(() => {
@@ -38,6 +42,14 @@ export default function Home() {
     return `${year}-${month}-${day}`;
   };
 
+  const getRecentDates = (days: number) => {
+    return Array.from({ length: days }, (_, index) => {
+      const dateObj = new Date();
+      dateObj.setDate(dateObj.getDate() - index);
+      return getLocalDateString(dateObj);
+    });
+  };
+
   // --- CRUD OPERATIONS (Now User Specific) ---
   const fetchHabits = async (userId: string) => {
     const { data, error } = await supabase
@@ -52,6 +64,7 @@ export default function Home() {
     if (!newHabitName.trim() || !session) return;
     const tempName = newHabitName;
     setNewHabitName("");
+    setStatusMessage("");
 
     const { data, error } = await supabase
       .from("habits")
@@ -61,18 +74,29 @@ export default function Home() {
       }])
       .select();
 
-    if (error) console.log("Error adding:", error);
-    else if (data) setHabits((prev) => [...prev, data[0]]);
+    if (error) {
+      setStatusMessage("We couldn't add that habit. Please try again.");
+      setNewHabitName(tempName);
+      return;
+    }
+    if (data) setHabits((prev) => [...prev, data[0]]);
   };
 
   const deleteHabit = async (id: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm("Are you sure you want to delete this habit?")) return;
+    setStatusMessage("");
+    const previousHabits = habits;
     setHabits((prev) => prev.filter((h) => h.id !== id));
-    await supabase.from("habits").delete().eq("id", id);
+    const { error } = await supabase.from("habits").delete().eq("id", id);
+    if (error) {
+      setHabits(previousHabits);
+      setStatusMessage("We couldn't delete that habit. Please try again.");
+    }
   };
 
   const toggleHabit = async (habit: any) => {
+    setStatusMessage("");
     const today = getLocalDateString(); 
     const completedDates = habit.completed_dates || [];
     const isCompleted = completedDates.includes(today);
@@ -90,10 +114,18 @@ export default function Home() {
       )
     );
 
-    await supabase
+    const { error } = await supabase
       .from("habits")
       .update({ completed_dates: newDates })
       .eq("id", habit.id);
+    if (error) {
+      setHabits((currentHabits) =>
+        currentHabits.map((h) =>
+          h.id === habit.id ? { ...h, completed_dates: completedDates } : h
+        )
+      );
+      setStatusMessage("We couldn't update that habit. Please try again.");
+    }
   };
 
   const handleLogout = async () => {
@@ -128,6 +160,34 @@ export default function Home() {
   const totalHabits = habits.length;
   const completedToday = habits.filter(h => h.completed_dates?.includes(today)).length;
   const progressPercentage = totalHabits === 0 ? 0 : Math.round((completedToday / totalHabits) * 100);
+  const longestStreak = habits.reduce((max, habit) => Math.max(max, getStreak(habit.completed_dates || [])), 0);
+  const activeStreaks = habits.filter(habit => getStreak(habit.completed_dates || []) > 0).length;
+  const recentDates = getRecentDates(7);
+  const weeklyCompletions = habits.reduce((count, habit) => {
+    const completedDates = habit.completed_dates || [];
+    return count + recentDates.filter(date => completedDates.includes(date)).length;
+  }, 0);
+  const weeklyPossible = totalHabits * 7;
+  const weeklyRate = weeklyPossible === 0 ? 0 : Math.round((weeklyCompletions / weeklyPossible) * 100);
+
+  const filteredHabits = habits
+    .filter((habit) => habit.name.toLowerCase().includes(searchTerm.toLowerCase()))
+    .filter((habit) => {
+      if (filterMode === "completed") return habit.completed_dates?.includes(today);
+      if (filterMode === "pending") return !habit.completed_dates?.includes(today);
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortMode === "name") return a.name.localeCompare(b.name);
+      if (sortMode === "streak") {
+        const streakA = getStreak(a.completed_dates || []);
+        const streakB = getStreak(b.completed_dates || []);
+        return streakB - streakA;
+      }
+      const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return timeB - timeA;
+    });
 
   const DateDetailView = () => {
     if (!selectedDate) return null;
@@ -153,108 +213,7 @@ export default function Home() {
               return (
                 <div key={habit.id} className="flex justify-between items-center p-3 rounded-xl bg-white/5 border border-white/10">
                   <span className="text-gray-200">{habit.name}</span>
-                  {wasCompleted ? (
-                     <span className="text-emerald-400 flex items-center gap-2 text-sm font-bold bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">✓ Done</span>
-                  ) : (
-                     <span className="text-gray-500 text-sm font-medium px-3 py-1">Missed</span>
-                  )}
-                </div>
-              )
-            })
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const CalendarView = () => {
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = date.getMonth(); 
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const daysArray = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-
-    const getDayData = (day: number) => {
-      const dateString = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const activeHabits = habits.filter(habit => {
-        const createdDateLocal = getLocalDateString(new Date(habit.created_at));
-        return createdDateLocal <= dateString;
-      });
-      let completedCount = 0;
-      activeHabits.forEach(habit => {
-        if (habit.completed_dates && habit.completed_dates.includes(dateString)) completedCount++;
-      });
-      
-      if (activeHabits.length === 0) return { dateString, colorClass: "bg-white/5 text-gray-600 hover:bg-white/10" };
-
-      const percentage = (completedCount / activeHabits.length) * 100;
-      let colorClass = "";
-      if (percentage === 0) colorClass = "bg-white/5 text-gray-500 hover:bg-white/10";
-      else if (percentage < 50) colorClass = "bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30";
-      else if (percentage < 100) colorClass = "bg-amber-500/20 text-amber-200 border border-amber-500/30 hover:bg-amber-500/30";
-      else colorClass = "bg-emerald-500/20 text-emerald-200 border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.2)] hover:bg-emerald-500/30";
-
-      return { dateString, colorClass };
-    };
-
-    return (
-      <div className="w-full animate-in slide-in-from-left duration-200">
-        <h2 className="text-lg font-bold mb-4 text-center text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">
-          {date.toLocaleString('default', { month: 'long' })} Overview
-        </h2>
-        <div className="grid grid-cols-7 gap-1">
-          {['S','M','T','W','T','F','S'].map((d, i) => (<div key={i} className="text-center text-[10px] text-gray-500 font-bold uppercase">{d}</div>))}
-          {daysArray.map((day) => {
-            const { dateString, colorClass } = getDayData(day);
-            return (
-              <button key={day} onClick={() => setSelectedDate(dateString)} className={`h-8 w-full rounded-md flex items-center justify-center text-xs font-bold transition-all duration-300 ${colorClass}`}>
-                {day}
-              </button>
-            );
-          })}
-        </div>
-        <p className="text-center text-xs text-gray-500 mt-4">Click a day to view details</p>
-      </div>
-    );
-  };
-
-  // --- 2. RENDER: Login Screen OR App ---
-  if (!session) {
-    return <AuthForm />;
-  }
-
-  return (
-    <main className="flex min-h-screen flex-col items-center p-8 md:p-24 relative overflow-hidden bg-[#0a0a0a]">
-      <div className="absolute top-0 left-0 w-full h-full overflow-hidden -z-10">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-purple-600/20 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-600/10 rounded-full blur-[120px]" />
-      </div>
-
-      <div className="w-full max-w-2xl flex justify-between items-center mb-12">
-        <div>
-          <h1 className="text-5xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 drop-shadow-lg">
-            Habit Tracker
-          </h1>
-          <p className="text-gray-400 mt-2 text-lg">Build consistency, one day at a time.</p>
-        </div>
-        
-        <div className="flex gap-3">
-           {/* LOGOUT BUTTON */}
-           <button 
-             onClick={handleLogout}
-             className="p-4 bg-white/5 hover:bg-rose-500/20 rounded-2xl border border-white/10 transition-all hover:scale-105 group backdrop-blur-md"
-             title="Sign Out"
-           >
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 group-hover:text-rose-400">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                <polyline points="16 17 21 12 16 7"></polyline>
-                <line x1="21" y1="12" x2="9" y2="12"></line>
-              </svg>
-           </button>
-
-           <button 
-            onClick={() => { setShowCalendar(true); setSelectedDate(null); }}
-            className="p-4 bg-white/5 hover:bg-white/10 rounded-2xl border border-white/10 transition-all hover:scale-105 group backdrop-blur-md"
+@@ -258,72 +318,137 @@ export default function Home() {
             title="View Calendar"
            >
              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-300 group-hover:text-white transition-colors">
@@ -280,6 +239,24 @@ export default function Home() {
         </p>
       </div>
 
+      <div className="w-full max-w-2xl grid gap-4 md:grid-cols-3 mb-10">
+        <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-md shadow-lg">
+          <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Longest Streak</p>
+          <p className="text-3xl font-bold text-white mt-2">{longestStreak} days</p>
+          <p className="text-sm text-gray-400 mt-1">Your all-time best streak.</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-md shadow-lg">
+          <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Active Habits</p>
+          <p className="text-3xl font-bold text-white mt-2">{activeStreaks}</p>
+          <p className="text-sm text-gray-400 mt-1">Habits with an ongoing streak.</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-md shadow-lg">
+          <p className="text-xs uppercase tracking-[0.2em] text-gray-500">This Week</p>
+          <p className="text-3xl font-bold text-white mt-2">{weeklyRate}%</p>
+          <p className="text-sm text-gray-400 mt-1">{weeklyCompletions} of {weeklyPossible} check-ins.</p>
+        </div>
+      </div>
+
       <div className="w-full max-w-2xl flex gap-3 mb-10 relative">
         <input
           type="text"
@@ -292,8 +269,50 @@ export default function Home() {
         <button onClick={addHabit} className="px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl font-bold text-white shadow-lg hover:shadow-purple-500/30 hover:scale-105 transition-all duration-200">Add</button>
       </div>
 
+      {statusMessage && (
+        <div className="w-full max-w-2xl mb-6 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          {statusMessage}
+        </div>
+      )}
+
+      <div className="w-full max-w-2xl flex flex-col gap-4 mb-6">
+        <div className="flex flex-col md:flex-row gap-3">
+          <input
+            type="text"
+            placeholder="Search habits..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="flex-1 p-4 rounded-2xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-transparent transition-all"
+          />
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as "recent" | "streak" | "name")}
+            className="p-4 rounded-2xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          >
+            <option value="recent">Sort: Newest</option>
+            <option value="streak">Sort: Streak</option>
+            <option value="name">Sort: Name</option>
+          </select>
+        </div>
+        <div className="flex gap-2">
+          {(["all", "completed", "pending"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setFilterMode(mode)}
+              className={`px-4 py-2 rounded-full text-sm font-semibold border transition-all ${
+                filterMode === mode
+                  ? "bg-white/10 border-white/20 text-white"
+                  : "bg-transparent border-white/10 text-gray-400 hover:text-white hover:border-white/30"
+              }`}
+            >
+              {mode === "all" ? "All" : mode === "completed" ? "Completed today" : "Pending today"}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="w-full max-w-2xl space-y-4">
-        {habits.map((habit) => {
+        {filteredHabits.map((habit) => {
           const isCompleted = habit.completed_dates?.includes(today);
           const streak = getStreak(habit.completed_dates || []);
           return (
@@ -311,7 +330,12 @@ export default function Home() {
             </div>
           );
         })}
-        {habits.length === 0 && <div className="text-center p-12 text-gray-500 border-2 border-dashed border-white/10 rounded-3xl"><p className="text-lg">No habits found.</p><p className="text-sm">Create one to get started!</p></div>}
+        {filteredHabits.length === 0 && (
+          <div className="text-center p-12 text-gray-500 border-2 border-dashed border-white/10 rounded-3xl">
+            <p className="text-lg">No habits match this view.</p>
+            <p className="text-sm">Try adjusting filters or adding a new habit.</p>
+          </div>
+        )}
       </div>
 
       {showCalendar && (
