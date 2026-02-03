@@ -19,8 +19,8 @@ export default function AuthForm() {
       if (error) setMessage(error.message);
     } else {
       const { error } = await supabase.auth.signUp({ email, password });
-      if (error) setMessage("Check your email for the confirmation link!");
-      else setMessage("Sign up successful! You can now log in.");
+      if (error) setMessage(error.message);
+      else setMessage("Sign up successful! Check your email for the confirmation link.");
     }
     setLoading(false);
   };
@@ -46,24 +46,7 @@ export default function AuthForm() {
             <input
               type="email"
               placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full p-4 rounded-xl bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
-              required
-            />
-          </div>
-          <div>
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full p-4 rounded-xl bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
-              required
-            />
-          </div>
-
-          {message && (
+@@ -67,26 +67,26 @@ export default function AuthForm() {
             <p className={`text-sm text-center ${message.includes("Check") ? "text-green-400" : "text-red-400"}`}>
               {message}
             </p>
